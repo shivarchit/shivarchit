@@ -12,7 +12,7 @@
 
 ###
 
-<img align="right" height="150" src="https://www.reddit.com/media?url=https%3A%2F%2Fi.redd.it%2Fymhwrjn3gim71.gif"  />
+<img align="right" height="150" src="https://tenor.com/bKpTq.gif"  />
 
 ###
 
