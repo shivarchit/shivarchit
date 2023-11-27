@@ -3,10 +3,10 @@
 <h2 align="left">Hi! My name is Shiv Archit, and I'm a Full Stack Developer from Chandigarh, India.</h2>
 
 ###
-
-<div align="center">
-  ![](https://github-readme-stats.vercel.app/api?username=shivarchit&theme=dracula&hide_border=false&include_all_commits=true&count_private=false)<br/>
+![](https://github-readme-stats.vercel.app/api?username=shivarchit&theme=dracula&hide_border=false&include_all_commits=true&count_private=false)<br/>
 ![](https://github-readme-streak-stats.herokuapp.com/?user=shivarchit&theme=dracula&hide_border=false)<br/>
+<div align="center">
+  
   <img src="https://github-readme-stats.vercel.app/api?username=shivarchit&hide_title=false&hide_rank=false&show_icons=true&include_all_commits=true&count_private=true&disable_animations=false&theme=dracula&locale=en&hide_border=false" height="150" alt="stats graph"  />
   <img src="https://github-readme-stats.vercel.app/api/top-langs?username=shivarchit&locale=en&hide_title=false&layout=compact&card_width=320&langs_count=5&theme=dracula&hide_border=false" height="150" alt="languages graph"  />
 </div>
