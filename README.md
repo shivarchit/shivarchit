@@ -1,6 +1,6 @@
 <br clear="both">
 
-<h2 align="left">Hi! My name is Shiv Archit, and I'm a Full Stack Developer from Chandigarh, India.</h2>
+<!--<h2 align="left">Hi! My name is Shiv Archit, and I'm a Full Stack Developer from Chandigarh, India.</h2> -->
 
 ###
 
