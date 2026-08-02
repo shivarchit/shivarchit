@@ -71,10 +71,11 @@ function ridgePath(vals, baseY, amp, innerW) {
 function render(rows) {
   const innerW = W - PAD_X * 2;
   const gap = (H - TOP - BOTTOM) / (ROWS - 1);
-  // p95 cap + sqrt: one 100+ commit outlier day must not flatten the year
+  // Bursty, sparse data: presence floor makes every active day visible;
+  // sqrt over a p90 cap adds magnitude without letting one 150-commit day flatten the rest.
   const nonzero = rows.flatMap(([, counts]) => counts).filter(c => c > 0).sort((a, b) => a - b);
-  const cap = Math.max(1, nonzero[Math.floor(nonzero.length * 0.95)] ?? 1);
-  const scale = c => Math.min(1, Math.sqrt(c / cap));
+  const cap = Math.max(1, nonzero[Math.floor(nonzero.length * 0.90)] ?? 1);
+  const scale = c => c > 0 ? 0.22 + 0.78 * Math.min(1, Math.sqrt(c / cap)) : 0;
 
   let busiest = { count: -1, row: 0, idx: 0, len: 1 };
   rows.forEach(([, counts], m) => counts.forEach((c, i) => {
