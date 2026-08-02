@@ -71,7 +71,10 @@ function ridgePath(vals, baseY, amp, innerW) {
 function render(rows) {
   const innerW = W - PAD_X * 2;
   const gap = (H - TOP - BOTTOM) / (ROWS - 1);
-  const max = Math.max(1, ...rows.flatMap(([, counts]) => counts));
+  // p95 cap + sqrt: one 100+ commit outlier day must not flatten the year
+  const nonzero = rows.flatMap(([, counts]) => counts).filter(c => c > 0).sort((a, b) => a - b);
+  const cap = Math.max(1, nonzero[Math.floor(nonzero.length * 0.95)] ?? 1);
+  const scale = c => Math.min(1, Math.sqrt(c / cap));
 
   let busiest = { count: -1, row: 0, idx: 0, len: 1 };
   rows.forEach(([, counts], m) => counts.forEach((c, i) => {
@@ -81,7 +84,7 @@ function render(rows) {
   let body = '';
   rows.forEach(([key, counts], m) => {
     const baseY = TOP + m * gap;
-    const vals = smooth(counts.map(c => c / max));
+    const vals = smooth(counts.map(scale));
     const d = ridgePath(vals, baseY, AMP, innerW);
     const last = m === ROWS - 1;
     const opacity = (0.3 + 0.7 * (m / (ROWS - 1))).toFixed(2);
