@@ -56,8 +56,12 @@ function byMonth(days) {
 const smooth = v => v.map((p, i) =>
   (v[Math.max(0, i - 1)] + 2 * p + v[Math.min(v.length - 1, i + 1)]) / 4);
 
+// Fixed day-width step: a full month spans the row, a 2-day-old month draws
+// a short line that grows across the row as the month progresses.
+const DAY_STEP = 30;
+
 function ridgePath(vals, baseY, amp, innerW) {
-  const n = vals.length, step = innerW / (n - 1);
+  const n = vals.length, step = innerW / DAY_STEP;
   let d = `M ${PAD_X} ${(baseY - vals[0] * amp).toFixed(1)}`;
   for (let i = 1; i < n; i++) {
     const x = PAD_X + i * step, y = baseY - vals[i] * amp;
@@ -94,13 +98,13 @@ function render(rows) {
     const last = m === accentRow;
     const opacity = (0.3 + 0.7 * (m / (ROWS - 1))).toFixed(2);
     const delay = (m * 0.08).toFixed(2);
-    body += `<path class="occ" d="${d} L ${W - PAD_X} ${H} L ${PAD_X} ${H} Z"/>`;
+    const lastX = PAD_X + (counts.length - 1) * (innerW / DAY_STEP);
+    body += `<path class="occ" d="${d} L ${lastX.toFixed(1)} ${H} L ${PAD_X} ${H} Z"/>`;
     body += `<path class="${last ? 'rl' : 'rg'}" pathLength="1" style="animation-delay:${delay}s"` +
       (last ? '' : ` stroke-opacity="${opacity}"`) + ` d="${d}"/>`;
     body += `<text class="faint" x="${PAD_X - 34}" y="${(baseY + 3).toFixed(1)}">${MONTHS[+key.slice(5) - 1]}</text>`;
     if (m === busiest.row && busiest.count > 0) {
-      const step = innerW / (busiest.len - 1);
-      const mx = PAD_X + busiest.idx * step;
+      const mx = PAD_X + busiest.idx * (innerW / DAY_STEP);
       const my = baseY - vals[busiest.idx] * AMP;
       body += `<circle cx="${mx.toFixed(1)}" cy="${my.toFixed(1)}" r="3" fill="${ACCENT}"/>`;
       body += `<text x="${Math.min(mx + 9, W - 190).toFixed(1)}" y="${(my - 7).toFixed(1)}">BUSIEST · ${busiest.count} COMMITS</text>`;
