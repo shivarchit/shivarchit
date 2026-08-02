@@ -83,11 +83,15 @@ function render(rows) {
   }));
 
   let body = '';
+  // Accent the newest month that has activity — day 1 of a fresh month has no terrain yet
+  let accentRow = ROWS - 1;
+  while (accentRow > 0 && rows[accentRow][1].every(c => c === 0)) accentRow--;
+
   rows.forEach(([key, counts], m) => {
     const baseY = TOP + m * gap;
     const vals = smooth(counts.map(scale));
     const d = ridgePath(vals, baseY, AMP, innerW);
-    const last = m === ROWS - 1;
+    const last = m === accentRow;
     const opacity = (0.3 + 0.7 * (m / (ROWS - 1))).toFixed(2);
     const delay = (m * 0.08).toFixed(2);
     body += `<path class="occ" d="${d} L ${W - PAD_X} ${H} L ${PAD_X} ${H} Z"/>`;
