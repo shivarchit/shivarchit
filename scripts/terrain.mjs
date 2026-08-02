@@ -71,11 +71,11 @@ function ridgePath(vals, baseY, amp, innerW) {
 function render(rows) {
   const innerW = W - PAD_X * 2;
   const gap = (H - TOP - BOTTOM) / (ROWS - 1);
-  // Bursty, sparse data: presence floor makes every active day visible;
-  // sqrt over a p90 cap adds magnitude without letting one 150-commit day flatten the rest.
-  const nonzero = rows.flatMap(([, counts]) => counts).filter(c => c > 0).sort((a, b) => a - b);
-  const cap = Math.max(1, nonzero[Math.floor(nonzero.length * 0.90)] ?? 1);
-  const scale = c => c > 0 ? 0.22 + 0.78 * Math.min(1, Math.sqrt(c / cap)) : 0;
+  // Bursty, sparse data: presence floor makes every active day visible,
+  // sqrt compresses the spread so a 150-commit day doesn't flatten 1-commit days.
+  // Percentile caps backfire here — with few active days they clip everything to max.
+  const max = Math.max(1, ...rows.flatMap(([, counts]) => counts));
+  const scale = c => c > 0 ? 0.22 + 0.78 * Math.sqrt(c / max) : 0;
 
   let busiest = { count: -1, row: 0, idx: 0, len: 1 };
   rows.forEach(([, counts], m) => counts.forEach((c, i) => {
