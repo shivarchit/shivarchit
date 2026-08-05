@@ -93,12 +93,17 @@ function render(rows) {
 
   rows.forEach(([key, counts], m) => {
     const baseY = TOP + m * gap;
-    const vals = smooth(counts.map(scale));
+    // Trailing zero-pad to full row width: the partial current month descends to
+    // its baseline after today instead of ending mid-air, and short months reach
+    // the right edge like 31-day ones.
+    const padded = [...counts];
+    while (padded.length < DAY_STEP + 1) padded.push(0);
+    const vals = smooth(padded.map(scale));
     const d = ridgePath(vals, baseY, AMP, innerW);
     const last = m === accentRow;
     const opacity = (0.3 + 0.7 * (m / (ROWS - 1))).toFixed(2);
     const delay = (m * 0.08).toFixed(2);
-    const lastX = PAD_X + (counts.length - 1) * (innerW / DAY_STEP);
+    const lastX = PAD_X + (vals.length - 1) * (innerW / DAY_STEP);
     body += `<path class="occ" d="${d} L ${lastX.toFixed(1)} ${H} L ${PAD_X} ${H} Z"/>`;
     body += `<path class="${last ? 'rl' : 'rg'}" pathLength="1" style="animation-delay:${delay}s"` +
       (last ? '' : ` stroke-opacity="${opacity}"`) + ` d="${d}"/>`;
