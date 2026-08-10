@@ -12,6 +12,29 @@ const W = 720, H = 430, STREET = 330, PAD = 26;
 const AMBER = '#F2AE4C', SILVER = '#C9D6E4', LAVA = '#2F6FC4';
 const MONTHS = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
 
+// time of day in Chandigarh decides the sky; workflow renders 5x/day
+const phaseArg = process.argv.find(a => a.startsWith('--phase='))?.slice(8);
+const istHour = (new Date().getUTCHours() + new Date().getUTCMinutes() / 60 + 5.5) % 24;
+const PHASE = phaseArg ||
+  (istHour >= 5.5 && istHour < 8 ? 'dawn' : istHour >= 8 && istHour < 17 ? 'day'
+    : istHour >= 17 && istHour < 19.5 ? 'dusk' : 'night');
+
+const PALETTES = {
+  night: { sky1: '#0A1626', sky2: '#13253E', sky3: '#1B3050', street1: '#0C1828', street2: '#060C16',
+    tower: '#0A111C', darkwin: '#131E2E', haze: '#31517A', cloud: '#141F30', meta: '#8FA3BC',
+    faint: '#5D7492', neon: '#F5D9A8', tag: '#EFD9B4' },
+  dawn: { sky1: '#2B3550', sky2: '#6E5A70', sky3: '#C97F6E', street1: '#3A4258', street2: '#232A3A',
+    tower: '#131C2C', darkwin: '#1E2A3E', haze: '#8A7A90', cloud: '#584A62', meta: '#D8DCE8',
+    faint: '#9AA4BC', neon: '#F5D9A8', tag: '#F2E2D0' },
+  day: { sky1: '#8FBADF', sky2: '#B8D4EA', sky3: '#D5E5F2', street1: '#7A93AC', street2: '#5C7288',
+    tower: '#33475E', darkwin: '#3E5570', haze: '#E8EFF5', cloud: '#FFFFFF', meta: '#23364C',
+    faint: '#41586F', neon: '#2B4258', tag: '#2B4258' },
+  dusk: { sky1: '#3A2E4E', sky2: '#8A4A50', sky3: '#E08A55', street1: '#40384E', street2: '#262232',
+    tower: '#1A1828', darkwin: '#282438', haze: '#8A6A70', cloud: '#55405C', meta: '#EAD8CC',
+    faint: '#B09A94', neon: '#F5D9A8', tag: '#F5E4D4' },
+};
+const P = PALETTES[PHASE];
+
 let seed = 47; // deterministic: skyline must not change shape between renders
 const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
 
@@ -154,38 +177,56 @@ function render(rows, langs, weather) {
   <use href="#virtus" transform="translate(0 22.2) scale(1 -1)" opacity="0.18"/>
 </g></g>`;
 
-  // sky by weather
+  // sky = phase (time of day) + weather
   const kind = weather?.kind ?? 'haze';
-  let sky = '', reflOpacity = 0.16;
-  if (kind === 'clear' || kind === 'cloudy') {
-    let stars = '';
+  let sky = '', reflOpacity = PHASE === 'day' ? 0.10 : 0.16;
+
+  // puffy cloud: overlapping soft ellipses with a slow drift
+  const cloud = (cx, cy, s, drift) => `<g transform="translate(${cx} ${cy}) scale(${s})" fill="var(--cloud)" filter="url(#cloudblur)" opacity="0.75">
+    <animateTransform attributeName="transform" type="translate" additive="sum" values="0 0;${drift} 0;0 0" dur="47s" repeatCount="indefinite"/>
+    <ellipse cx="0" cy="0" rx="34" ry="10"/><ellipse cx="-22" cy="3" rx="18" ry="7"/><ellipse cx="20" cy="2" rx="22" ry="8"/>
+    <ellipse cx="-6" cy="-8" rx="16" ry="8"/><ellipse cx="12" cy="-5" rx="13" ry="6"/></g>`;
+
+  // sun rides an arc through the day; moon holds the night sky
+  let orb = '';
+  if (PHASE === 'night') {
+    orb = `<circle cx="300" cy="60" r="13" fill="#E8EDF4" opacity="${kind === 'clear' ? 0.85 : 0.5}" filter="url(#moonglow)"/>`;
     if (kind === 'clear') for (let i = 0; i < 22; i++) {
       const sx = PAD + rnd() * (W - PAD * 2), sy = 24 + rnd() * 120, so = 0.25 + rnd() * 0.5;
-      stars += `<circle cx="${sx.toFixed(1)}" cy="${sy.toFixed(1)}" r="0.9" fill="#DCE6F2" opacity="${so.toFixed(2)}">${
+      orb += `<circle cx="${sx.toFixed(1)}" cy="${sy.toFixed(1)}" r="0.9" fill="#DCE6F2" opacity="${so.toFixed(2)}">${
         rnd() < 0.3 ? `<animate attributeName="opacity" values="${so.toFixed(2)};0.1;${so.toFixed(2)}" dur="${(2 + rnd() * 4).toFixed(1)}s" repeatCount="indefinite"/>` : ''}</circle>`;
     }
-    const moonOp = kind === 'clear' ? 0.85 : 0.4;
-    sky = `${stars}<circle cx="300" cy="60" r="13" fill="#E8EDF4" opacity="${moonOp}" filter="url(#moonglow)"/>`;
-    if (kind === 'cloudy') sky += `
-      <ellipse cx="280" cy="66" rx="52" ry="10" fill="#141F30" opacity="0.8"/>
-      <ellipse cx="470" cy="96" rx="66" ry="11" fill="#141F30" opacity="0.65"/>`;
+  } else {
+    const t = PHASE === 'dawn' ? 0.06 : PHASE === 'dusk' ? 0.94
+      : Math.min(0.9, Math.max(0.1, (istHour - 8) / 9));
+    const sx = PAD + 40 + t * (W - PAD * 2 - 80);
+    const sy = 150 - 105 * Math.sin(Math.PI * t);
+    const sunCol = PHASE === 'day' ? '#FFD98A' : PHASE === 'dawn' ? '#FFC08A' : '#FF9E5C';
+    const sunOp = kind === 'clear' ? 0.95 : kind === 'haze' ? 0.6 : 0.35;
+    orb = `<circle cx="${sx.toFixed(1)}" cy="${sy.toFixed(1)}" r="15" fill="${sunCol}" opacity="${sunOp}" filter="url(#moonglow)"/>`;
+  }
+  sky = orb;
+
+  if (kind === 'cloudy') {
+    sky += cloud(250, 70, 1.1, 26) + cloud(470, 102, 0.85, -20) + cloud(602, 55, 0.7, 18);
   } else if (kind === 'haze') {
-    sky = `<circle cx="300" cy="60" r="13" fill="#E8EDF4" opacity="0.8" filter="url(#moonglow)"/>
-<rect x="0" y="150" width="${W}" height="70" fill="url(#haze)" opacity="0.5"/>`;
-  } else { // rain / snow
+    sky += `<rect x="0" y="150" width="${W}" height="70" fill="url(#haze)" opacity="0.5"/>`;
+  } else if (kind === 'rain' || kind === 'snow') {
     reflOpacity = 0.22;
+    sky += cloud(230, 60, 1.15, 20) + cloud(500, 82, 0.95, -18);
     const drop = kind === 'snow' ? { len: 3, w: 1.4, col: '#D8E2EE', dur: 3.2 } : { len: 11, w: 0.9, col: '#7FA0C8', dur: 1.1 };
     let lines = '';
     for (let i = 0; i < 46; i++) {
       const rx = rnd() * W, ry = rnd() * H;
       lines += `<line x1="${rx.toFixed(1)}" y1="${ry.toFixed(1)}" x2="${(rx - 2).toFixed(1)}" y2="${(ry + drop.len).toFixed(1)}" stroke="${drop.col}" stroke-width="${drop.w}" opacity="0.35"/>`;
     }
-    sky = `<g><animateTransform attributeName="transform" type="translate" from="0 -${H}" to="0 0" dur="${drop.dur}s" repeatCount="indefinite"/>${lines}
+    sky += `<g><animateTransform attributeName="transform" type="translate" from="0 -${H}" to="0 0" dur="${drop.dur}s" repeatCount="indefinite"/>${lines}
       <g transform="translate(0 -${H})">${lines}</g></g>`;
   }
 
-  const wxLabel = { clear: 'CLEAR NIGHT', cloudy: 'CLOUDY', haze: 'HAZY NIGHT', rain: 'RAIN', snow: 'SNOW' }[kind];
-  const header = weather ? `CHANDIGARH · ${weather.temp}°C · ${wxLabel}` : 'CHANDIGARH';
+  const wxLabel = { clear: 'CLEAR', cloudy: 'CLOUDY', haze: 'HAZY', rain: 'RAIN', snow: 'SNOW' }[kind];
+  const phaseLabel = { night: 'NIGHT', dawn: 'DAWN', day: 'DAY', dusk: 'DUSK' }[PHASE];
+  const header = weather ? `CHANDIGARH · ${weather.temp}°C · ${wxLabel} · ${phaseLabel}` : `CHANDIGARH · ${phaseLabel}`;
 
   const LANG_COLORS = [AMBER, '#E88A6A', '#9BC0A0', '#B4A0D8'];
   const SHORT = { TypeScript: 'TS', JavaScript: 'JS', Python: 'PY', Go: 'GO', Rust: 'RS', HTML: 'HTML', CSS: 'CSS', Shell: 'SH' };
@@ -200,15 +241,13 @@ function render(rows, langs, weather) {
 
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="A year of commits as a city at night: each tower a month, each lit window a day">
 <style>
-  :root{--sky1:#0A1626;--sky2:#13253E;--sky3:#1B3050;--street1:#0C1828;--street2:#060C16;--haze:#31517A;
-        --tower:#0A111C;--darkwin:#131E2E;--meta:#8FA3BC;--faint:#5D7492}
-  @media(prefers-color-scheme:light){:root{--sky1:#C7D5E6;--sky2:#B4C6DC;--sky3:#9FB4CE;--street1:#8FA3BC;--street2:#6E84A0;--haze:#DFE9F4;
-        --tower:#25344A;--darkwin:#31435C;--meta:#3B4E68;--faint:#5E7391}}
+  :root{--sky1:${P.sky1};--sky2:${P.sky2};--sky3:${P.sky3};--street1:${P.street1};--street2:${P.street2};--haze:${P.haze};
+        --tower:${P.tower};--darkwin:${P.darkwin};--cloud:${P.cloud};--meta:${P.meta};--faint:${P.faint}}
   .tw{fill:var(--tower)}.dark{fill:var(--darkwin)}.win{fill:${AMBER}}
   .dawn{fill:${SILVER}}
   text{font:600 11px ui-monospace,Menlo,Consolas,monospace;letter-spacing:1.6px;fill:var(--meta)}
-  .neon{font-size:15px;letter-spacing:7px;fill:#F5D9A8}
-  .tag{font-size:10px;fill:#EFD9B4}.dim{opacity:0.6}
+  .neon{font-size:15px;letter-spacing:7px;fill:${P.neon}}
+  .tag{font-size:10px;fill:${P.tag}}.dim{opacity:0.6}
   .mo{font-size:8px;fill:var(--faint);letter-spacing:1px}
   .sign{font-size:9px;letter-spacing:1px}
   .cap{font-size:9px;fill:var(--faint)}
@@ -234,6 +273,7 @@ function render(rows, langs, weather) {
   <filter id="glow" x="-80%" y="-80%" width="260%" height="260%"><feGaussianBlur stdDeviation="2.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
   <filter id="moonglow" x="-120%" y="-120%" width="340%" height="340%"><feGaussianBlur stdDeviation="6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
   <filter id="ripple"><feGaussianBlur stdDeviation="0.8 2.4"/></filter>
+  <filter id="cloudblur" x="-40%" y="-80%" width="180%" height="260%"><feGaussianBlur stdDeviation="3"/></filter>
   <clipPath id="streetclip"><rect x="0" y="${STREET}" width="${W}" height="${H - STREET}"/></clipPath>
   ${car}
 </defs>
@@ -253,7 +293,7 @@ ${carRun}
 ${beacon}
 ${labels}
 ${signs}
-<text class="cap" x="${PAD}" y="${H - 12}">EACH TOWER A MONTH · EACH LIT WINDOW A DAY · REDRAWN NIGHTLY 00:00 UTC</text>
+<text class="cap" x="${PAD}" y="${H - 12}">EACH TOWER A MONTH · EACH LIT WINDOW A DAY · SKY FOLLOWS CHANDIGARH, HOURLY</text>
 </svg>\n`;
 }
 

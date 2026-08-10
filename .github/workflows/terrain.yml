@@ -2,7 +2,7 @@ name: Generate terrain
 
 on:
   schedule:
-    - cron: "0 0 * * *" # nightly at 00:00 UTC
+    - cron: "0 * * * *" # hourly — sky follows Chandigarh time and live weather
   workflow_dispatch:
   push:
     branches:
