@@ -12,12 +12,14 @@ const W = 720, H = 430, STREET = 330, PAD = 26;
 const AMBER = '#F2AE4C', SILVER = '#C9D6E4', LAVA = '#2F6FC4';
 const MONTHS = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
 
-// time of day in Chandigarh decides the sky; workflow renders 5x/day
+// time of day in Chandigarh decides the sky; the workflow re-renders on a cron
 const phaseArg = process.argv.find(a => a.startsWith('--phase='))?.slice(8);
-const istHour = (new Date().getUTCHours() + new Date().getUTCMinutes() / 60 + 5.5) % 24;
+const now = new Date();
+const istHour = (now.getUTCHours() + now.getUTCMinutes() / 60 + 5.5) % 24;
+const DAY_START = 8, DAY_END = 17; // shared by the phase split and the sun arc
 const PHASE = phaseArg ||
-  (istHour >= 5.5 && istHour < 8 ? 'dawn' : istHour >= 8 && istHour < 17 ? 'day'
-    : istHour >= 17 && istHour < 19.5 ? 'dusk' : 'night');
+  (istHour >= 5.5 && istHour < DAY_START ? 'dawn' : istHour >= DAY_START && istHour < DAY_END ? 'day'
+    : istHour >= DAY_END && istHour < 19.5 ? 'dusk' : 'night');
 
 const PALETTES = {
   night: { sky1: '#0A1626', sky2: '#13253E', sky3: '#1B3050', street1: '#0C1828', street2: '#060C16',
@@ -35,8 +37,19 @@ const PALETTES = {
 };
 const P = PALETTES[PHASE];
 
-let seed = 47; // deterministic: skyline must not change shape between renders
+let seed = 47; // demo data only
 const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+
+// decoration randomness keyed on stable strings, so silent-tower heights,
+// stars, and flicker don't reshuffle every render as commit data changes
+const h01 = s => {
+  let h = 2166136261;
+  for (const c of s) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); }
+  return (h >>> 0) / 4294967296;
+};
+
+const pulse = (hi, lo, dur) =>
+  `<animate attributeName="opacity" values="${hi};${lo};${hi}" dur="${dur}s" repeatCount="indefinite"/>`;
 
 // ---------- data ----------
 async function gql(query, variables) {
@@ -52,23 +65,21 @@ async function gql(query, variables) {
 
 const LOGIN = process.env.GITHUB_REPOSITORY_OWNER || 'shivarchit';
 
-async function fetchDays() {
-  const data = await gql(`query($login:String!){user(login:$login){contributionsCollection{
-    contributionCalendar{weeks{contributionDays{date contributionCount}}}}}}`, { login: LOGIN });
-  return data.user.contributionsCollection.contributionCalendar.weeks
-    .flatMap(w => w.contributionDays.map(d => ({ date: d.date, count: d.contributionCount })));
-}
-
-async function fetchLangs() {
+// one round-trip for both the calendar and the language split
+async function fetchProfile() {
   const data = await gql(`query($login:String!){user(login:$login){
+    contributionsCollection{contributionCalendar{weeks{contributionDays{date contributionCount}}}}
     repositories(first:100, ownerAffiliations:OWNER, isFork:false){nodes{
       languages(first:5){edges{size node{name}}}}}}}`, { login: LOGIN });
+  const days = data.user.contributionsCollection.contributionCalendar.weeks
+    .flatMap(w => w.contributionDays.map(d => ({ date: d.date, count: d.contributionCount })));
   const sizes = {};
   for (const repo of data.user.repositories.nodes)
     for (const e of repo.languages.edges) sizes[e.node.name] = (sizes[e.node.name] || 0) + e.size;
   const total = Object.values(sizes).reduce((a, b) => a + b, 0) || 1;
-  return Object.entries(sizes).sort((a, b) => b[1] - a[1]).slice(0, 3)
+  const langs = Object.entries(sizes).sort((a, b) => b[1] - a[1]).slice(0, 3)
     .map(([name, size]) => ({ name, pct: Math.round(100 * size / total) }));
+  return { days, langs };
 }
 
 async function fetchWeather() {
@@ -87,7 +98,6 @@ function demoDays() {
   const d = new Date();
   d.setDate(d.getDate() - 364);
   for (let i = 0; i < 365; i++) {
-    const month = d.getMonth();
     const silent = i < 150;
     let c = 0;
     if (!silent) c = rnd() < 0.10 ? Math.floor(5 + rnd() * 40) : rnd() < 0.35 ? Math.floor(1 + rnd() * 6) : 0;
@@ -114,17 +124,21 @@ function render(rows, langs, weather) {
   const totals = rows.map(([, ds]) => ds.reduce((a, d) => a + d.count, 0));
   const maxTotal = Math.max(...totals, 1);
 
-  const slot = (W - PAD * 2) / 12, towerW = 40;
+  const N = rows.length;
+  const slot = (W - PAD * 2) / N, towerW = 40;
+  // window grid geometry; the active-tower minimum height derives from it so a
+  // 31-day month always fits and grid tweaks can't silently drop days
+  const cols = 4, cw = 7, ch = 5, gx = (towerW - cols * cw) / (cols + 1), gy = 4;
+  const minH = 14 + Math.ceil(31 / cols) * (ch + gy);
   let city = '', labels = '', burst = { c: -1 };
 
   rows.forEach(([key, ds], ti) => {
     const total = totals[ti], active = total > 0;
     const x = PAD + ti * slot + (slot - towerW) / 2;
-    const h = active ? 90 + 170 * Math.sqrt(total / maxTotal) : 34 + rnd() * 26;
+    const h = active ? minH + 4 + 170 * Math.sqrt(total / maxTotal) : 34 + h01(key) * 26;
     const top = STREET - h;
     city += `<rect class="tw" x="${x.toFixed(1)}" y="${top.toFixed(1)}" width="${towerW}" height="${h.toFixed(1)}"/>`;
-    if (ti === 11) city += `<rect class="dawn" x="${x.toFixed(1)}" y="${top.toFixed(1)}" width="2" height="${h.toFixed(1)}" opacity="0.25"/>`;
-    const cols = 4, cw = 7, ch = 5, gx = (towerW - cols * cw) / (cols + 1), gy = 4;
+    if (ti === N - 1) city += `<rect class="dawn" x="${x.toFixed(1)}" y="${top.toFixed(1)}" width="2" height="${h.toFixed(1)}" opacity="0.25"/>`;
     ds.forEach((day, d) => {
       // fill bottom-up: buildings light from the street; a young month keeps
       // dark floors above — under construction
@@ -133,10 +147,10 @@ function render(rows, langs, weather) {
       if (wy < top + 4) return;
       if (day.count > 0) {
         const o = 0.30 + 0.70 * Math.sqrt(day.count / maxDay);
-        const flick = rnd() < 0.12
-          ? `<animate attributeName="opacity" values="${o.toFixed(2)};${(o * 0.45).toFixed(2)};${o.toFixed(2)}" dur="${(3 + rnd() * 4).toFixed(1)}s" repeatCount="indefinite"/>` : '';
+        const flick = h01(day.date) < 0.12
+          ? pulse(o.toFixed(2), (o * 0.45).toFixed(2), (3 + h01(day.date + 'd') * 4).toFixed(1)) : '';
         city += `<rect class="win" x="${wx.toFixed(1)}" y="${wy.toFixed(1)}" width="${cw}" height="${ch}" opacity="${o.toFixed(2)}">${flick}</rect>`;
-        if (day.count > burst.c) burst = { c: day.count, x: wx + cw / 2, y: wy + ch / 2, ti, tx: x, th: h, date: day.date };
+        if (day.count > burst.c) burst = { c: day.count, x: wx + cw / 2, y: wy + ch / 2, tx: x, th: h, date: day.date };
       } else {
         city += `<rect class="dark" x="${wx.toFixed(1)}" y="${wy.toFixed(1)}" width="${cw}" height="${ch}"/>`;
       }
@@ -151,7 +165,7 @@ function render(rows, langs, weather) {
     const when = `${MONTHS[bd.getUTCMonth()]} ${String(bd.getUTCDate()).padStart(2, '0')}`;
     beacon = `
 <rect x="${(burst.tx + towerW / 2 - 2).toFixed(1)}" y="26" width="4" height="${(STREET - burst.th - 26).toFixed(1)}" fill="url(#beam)" opacity="0.2">
-  <animate attributeName="opacity" values="0.2;0.08;0.2" dur="5s" repeatCount="indefinite"/>
+  ${pulse(0.2, 0.08, 5)}
 </rect>
 <circle cx="${burst.x.toFixed(1)}" cy="${burst.y.toFixed(1)}" r="4.5" fill="#FFE3AC" filter="url(#glow)"/>
 <text class="tag" x="${W - PAD}" y="46" text-anchor="end">${burst.c} COMMITS · ONE NIGHT</text>
@@ -179,7 +193,7 @@ function render(rows, langs, weather) {
 
   // sky = phase (time of day) + weather
   const kind = weather?.kind ?? 'haze';
-  let sky = '', reflOpacity = PHASE === 'day' ? 0.10 : 0.16;
+  let reflOpacity = PHASE === 'day' ? 0.10 : 0.16;
 
   // puffy cloud: overlapping soft ellipses with a slow drift
   const cloud = (cx, cy, s, drift) => `<g transform="translate(${cx} ${cy}) scale(${s})" fill="var(--cloud)" filter="url(#cloudblur)" opacity="0.75">
@@ -188,24 +202,23 @@ function render(rows, langs, weather) {
     <ellipse cx="-6" cy="-8" rx="16" ry="8"/><ellipse cx="12" cy="-5" rx="13" ry="6"/></g>`;
 
   // sun rides an arc through the day; moon holds the night sky
-  let orb = '';
+  let sky = '';
   if (PHASE === 'night') {
-    orb = `<circle cx="300" cy="60" r="13" fill="#E8EDF4" opacity="${kind === 'clear' ? 0.85 : 0.5}" filter="url(#moonglow)"/>`;
+    sky = `<circle cx="300" cy="60" r="13" fill="#E8EDF4" opacity="${kind === 'clear' ? 0.85 : 0.5}" filter="url(#moonglow)"/>`;
     if (kind === 'clear') for (let i = 0; i < 22; i++) {
-      const sx = PAD + rnd() * (W - PAD * 2), sy = 24 + rnd() * 120, so = 0.25 + rnd() * 0.5;
-      orb += `<circle cx="${sx.toFixed(1)}" cy="${sy.toFixed(1)}" r="0.9" fill="#DCE6F2" opacity="${so.toFixed(2)}">${
-        rnd() < 0.3 ? `<animate attributeName="opacity" values="${so.toFixed(2)};0.1;${so.toFixed(2)}" dur="${(2 + rnd() * 4).toFixed(1)}s" repeatCount="indefinite"/>` : ''}</circle>`;
+      const sx = PAD + h01(`sx${i}`) * (W - PAD * 2), sy = 24 + h01(`sy${i}`) * 120, so = 0.25 + h01(`so${i}`) * 0.5;
+      sky += `<circle cx="${sx.toFixed(1)}" cy="${sy.toFixed(1)}" r="0.9" fill="#DCE6F2" opacity="${so.toFixed(2)}">${
+        h01(`tw${i}`) < 0.3 ? pulse(so.toFixed(2), 0.1, (2 + h01(`td${i}`) * 4).toFixed(1)) : ''}</circle>`;
     }
   } else {
     const t = PHASE === 'dawn' ? 0.06 : PHASE === 'dusk' ? 0.94
-      : Math.min(0.9, Math.max(0.1, (istHour - 8) / 9));
+      : Math.min(0.9, Math.max(0.1, (istHour - DAY_START) / (DAY_END - DAY_START)));
     const sx = PAD + 40 + t * (W - PAD * 2 - 80);
     const sy = 150 - 105 * Math.sin(Math.PI * t);
     const sunCol = PHASE === 'day' ? '#FFD98A' : PHASE === 'dawn' ? '#FFC08A' : '#FF9E5C';
     const sunOp = kind === 'clear' ? 0.95 : kind === 'haze' ? 0.6 : 0.35;
-    orb = `<circle cx="${sx.toFixed(1)}" cy="${sy.toFixed(1)}" r="15" fill="${sunCol}" opacity="${sunOp}" filter="url(#moonglow)"/>`;
+    sky = `<circle cx="${sx.toFixed(1)}" cy="${sy.toFixed(1)}" r="15" fill="${sunCol}" opacity="${sunOp}" filter="url(#moonglow)"/>`;
   }
-  sky = orb;
 
   if (kind === 'cloudy') {
     sky += cloud(250, 70, 1.1, 26) + cloud(470, 102, 0.85, -20) + cloud(602, 55, 0.7, 18);
@@ -217,19 +230,20 @@ function render(rows, langs, weather) {
     const drop = kind === 'snow' ? { len: 3, w: 1.4, col: '#D8E2EE', dur: 3.2 } : { len: 11, w: 0.9, col: '#7FA0C8', dur: 1.1 };
     let lines = '';
     for (let i = 0; i < 46; i++) {
-      const rx = rnd() * W, ry = rnd() * H;
+      const rx = h01(`rx${i}`) * W, ry = h01(`ry${i}`) * H;
       lines += `<line x1="${rx.toFixed(1)}" y1="${ry.toFixed(1)}" x2="${(rx - 2).toFixed(1)}" y2="${(ry + drop.len).toFixed(1)}" stroke="${drop.col}" stroke-width="${drop.w}" opacity="0.35"/>`;
     }
     sky += `<g><animateTransform attributeName="transform" type="translate" from="0 -${H}" to="0 0" dur="${drop.dur}s" repeatCount="indefinite"/>${lines}
       <g transform="translate(0 -${H})">${lines}</g></g>`;
   }
 
-  const wxLabel = { clear: 'CLEAR', cloudy: 'CLOUDY', haze: 'HAZY', rain: 'RAIN', snow: 'SNOW' }[kind];
-  const phaseLabel = { night: 'NIGHT', dawn: 'DAWN', day: 'DAY', dusk: 'DUSK' }[PHASE];
-  const header = weather ? `CHANDIGARH · ${weather.temp}°C · ${wxLabel} · ${phaseLabel}` : `CHANDIGARH · ${phaseLabel}`;
+  const header = weather
+    ? `CHANDIGARH · ${weather.temp}°C · ${kind.toUpperCase()} · ${PHASE.toUpperCase()}`
+    : `CHANDIGARH · ${PHASE.toUpperCase()}`;
 
   const LANG_COLORS = [AMBER, '#E88A6A', '#9BC0A0', '#B4A0D8'];
-  const SHORT = { TypeScript: 'TS', JavaScript: 'JS', Python: 'PY', Go: 'GO', Rust: 'RS', HTML: 'HTML', CSS: 'CSS', Shell: 'SH' };
+  // only names whose short form differs from the first-two-letters fallback
+  const SHORT = { TypeScript: 'TS', JavaScript: 'JS', Rust: 'RS', HTML: 'HTML', CSS: 'CSS' };
   const signW = 64;
   const signs = langs.map((l, i) => {
     const sx = W - PAD - (langs.length - i) * (signW + 10);
@@ -251,8 +265,7 @@ function render(rows, langs, weather) {
   .mo{font-size:8px;fill:var(--faint);letter-spacing:1px}
   .sign{font-size:9px;letter-spacing:1px}
   .cap{font-size:9px;fill:var(--faint)}
-  .temp{font-size:10px;fill:var(--meta)}
-  @media(prefers-reduced-motion:reduce){svg *{animation:none!important}}
+  .temp{font-size:10px}
 </style>
 <defs>
   <linearGradient id="skyg" x1="0" y1="0" x2="0" y2="1">
@@ -283,12 +296,10 @@ ${sky}
 <text class="temp" x="${PAD}" y="74">${header}</text>
 <rect x="0" y="${STREET}" width="${W}" height="${H - STREET}" fill="url(#wet)"/>
 <g clip-path="url(#streetclip)">
-  <g transform="translate(0 ${STREET * 2}) scale(1 -1)" opacity="${reflOpacity}" filter="url(#ripple)">
-    <g>${city}</g>
-  </g>
+  <g transform="translate(0 ${STREET * 2}) scale(1 -1)" opacity="${reflOpacity}" filter="url(#ripple)">${city}</g>
 </g>
 <rect x="0" y="${STREET}" width="${W}" height="1.2" fill="#2A3A50" opacity="0.9"/>
-<g>${city}</g>
+${city}
 ${carRun}
 ${beacon}
 ${labels}
@@ -299,14 +310,16 @@ ${signs}
 
 // ---------- main ----------
 const demo = process.argv.includes('--demo');
-const days = demo ? demoDays() : await fetchDays();
-const langs = demo
-  ? [{ name: 'TypeScript', pct: 62 }, { name: 'Python', pct: 21 }, { name: 'Go', pct: 9 }]
-  : await fetchLangs();
-const weather = await fetchWeather();
-const svg = render(byMonth(days), langs, weather);
+const [profile, weather] = await Promise.all([
+  demo
+    ? { days: demoDays(), langs: [{ name: 'TypeScript', pct: 62 }, { name: 'Python', pct: 21 }, { name: 'Go', pct: 9 }] }
+    : fetchProfile(),
+  fetchWeather(),
+]);
+const rows = byMonth(profile.days);
+const svg = render(rows, profile.langs, weather);
 // city block appears twice (skyline + reflection)
-if (!svg.includes('</svg>') || (svg.match(/class="tw"/g) || []).length !== 24)
+if (!svg.includes('</svg>') || (svg.match(/class="tw"/g) || []).length !== rows.length * 2)
   throw new Error('render self-check failed');
 mkdirSync('dist', { recursive: true });
 writeFileSync('dist/terrain.svg', svg);
