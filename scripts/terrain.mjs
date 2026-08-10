@@ -1,144 +1,272 @@
 #!/usr/bin/env node
-// Renders the last 12 months of GitHub contributions as an occlusion terrain SVG.
-// One ridge per month, oldest at the back. Ice accent on the current month.
+// CHANDIGARH NOCTURNE — a year of commits as a city at night.
+// Each tower a month, each lit window a day, brightness = commits.
+// Silent months are a sleeping district. The busiest night gets a rooftop
+// searchlight. Live weather (Open-Meteo) draws the sky: moon, haze, or rain.
+// A lava-blue Virtus crosses the street on a loop.
 // Usage: node scripts/terrain.mjs [--demo]  → writes dist/terrain.svg
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 
-const ACCENT = '#38BDF8';
-const W = 720, H = 430, PAD_X = 52, TOP = 64, BOTTOM = 60;
-const ROWS = 12, AMP = 64;
+const W = 720, H = 430, STREET = 330, PAD = 26;
+const AMBER = '#F2AE4C', SILVER = '#C9D6E4', LAVA = '#2F6FC4';
+const MONTHS = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
 
-async function fetchDays() {
-  const login = process.env.GITHUB_REPOSITORY_OWNER || 'shivarchit';
-  const query = `query($login:String!){user(login:$login){contributionsCollection{
-    contributionCalendar{weeks{contributionDays{date contributionCount}}}}}}`;
+let seed = 47; // deterministic: skyline must not change shape between renders
+const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+
+// ---------- data ----------
+async function gql(query, variables) {
   const res = await fetch('https://api.github.com/graphql', {
     method: 'POST',
     headers: { authorization: `bearer ${process.env.GITHUB_TOKEN}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ query, variables: { login } }),
+    body: JSON.stringify({ query, variables }),
   });
   const json = await res.json();
   if (json.errors) throw new Error(JSON.stringify(json.errors));
-  return json.data.user.contributionsCollection.contributionCalendar.weeks
-    .flatMap(w => w.contributionDays);
+  return json.data;
+}
+
+const LOGIN = process.env.GITHUB_REPOSITORY_OWNER || 'shivarchit';
+
+async function fetchDays() {
+  const data = await gql(`query($login:String!){user(login:$login){contributionsCollection{
+    contributionCalendar{weeks{contributionDays{date contributionCount}}}}}}`, { login: LOGIN });
+  return data.user.contributionsCollection.contributionCalendar.weeks
+    .flatMap(w => w.contributionDays.map(d => ({ date: d.date, count: d.contributionCount })));
+}
+
+async function fetchLangs() {
+  const data = await gql(`query($login:String!){user(login:$login){
+    repositories(first:100, ownerAffiliations:OWNER, isFork:false){nodes{
+      languages(first:5){edges{size node{name}}}}}}}`, { login: LOGIN });
+  const sizes = {};
+  for (const repo of data.user.repositories.nodes)
+    for (const e of repo.languages.edges) sizes[e.node.name] = (sizes[e.node.name] || 0) + e.size;
+  const total = Object.values(sizes).reduce((a, b) => a + b, 0) || 1;
+  return Object.entries(sizes).sort((a, b) => b[1] - a[1]).slice(0, 3)
+    .map(([name, size]) => ({ name, pct: Math.round(100 * size / total) }));
+}
+
+async function fetchWeather() {
+  try {
+    const res = await fetch('https://api.open-meteo.com/v1/forecast?latitude=30.73&longitude=76.78&current=temperature_2m,weather_code');
+    const { current } = await res.json();
+    const c = current.weather_code;
+    const kind = c <= 1 ? 'clear' : c <= 3 ? 'cloudy' : (c === 45 || c === 48) ? 'haze'
+      : (c >= 71 && c <= 77) || c === 85 || c === 86 ? 'snow' : 'rain';
+    return { temp: Math.round(current.temperature_2m), kind };
+  } catch { return null; } // weather is garnish — never fail the render over it
 }
 
 function demoDays() {
-  let seed = 47;
-  const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
   const days = [];
   const d = new Date();
   d.setDate(d.getDate() - 364);
   for (let i = 0; i < 365; i++) {
-    const burst = rnd() < 0.06 ? rnd() * 18 : 0;
-    days.push({
-      date: d.toISOString().slice(0, 10),
-      contributionCount: Math.max(0, Math.floor(rnd() * 9 - 2 + burst)),
-    });
+    const month = d.getMonth();
+    const silent = i < 150;
+    let c = 0;
+    if (!silent) c = rnd() < 0.10 ? Math.floor(5 + rnd() * 40) : rnd() < 0.35 ? Math.floor(1 + rnd() * 6) : 0;
+    days.push({ date: d.toISOString().slice(0, 10), count: c });
     d.setDate(d.getDate() + 1);
   }
+  days[334].count = 243;
   return days;
 }
-
-const MONTHS = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
 
 function byMonth(days) {
   const map = new Map();
   for (const day of days) {
     const key = day.date.slice(0, 7);
     if (!map.has(key)) map.set(key, []);
-    map.get(key).push(day.contributionCount);
+    map.get(key).push(day);
   }
-  return [...map.entries()].slice(-ROWS);
+  return [...map.entries()].slice(-12);
 }
 
-const smooth = v => v.map((p, i) =>
-  (v[Math.max(0, i - 1)] + 2 * p + v[Math.min(v.length - 1, i + 1)]) / 4);
+// ---------- render ----------
+function render(rows, langs, weather) {
+  const maxDay = Math.max(1, ...rows.flatMap(([, ds]) => ds.map(d => d.count)));
+  const totals = rows.map(([, ds]) => ds.reduce((a, d) => a + d.count, 0));
+  const maxTotal = Math.max(...totals, 1);
 
-// Fixed day-width step: a full month spans the row, a 2-day-old month draws
-// a short line that grows across the row as the month progresses.
-const DAY_STEP = 30;
+  const slot = (W - PAD * 2) / 12, towerW = 40;
+  let city = '', labels = '', burst = { c: -1 };
 
-function ridgePath(vals, baseY, amp, innerW) {
-  const n = vals.length, step = innerW / DAY_STEP;
-  let d = `M ${PAD_X} ${(baseY - vals[0] * amp).toFixed(1)}`;
-  for (let i = 1; i < n; i++) {
-    const x = PAD_X + i * step, y = baseY - vals[i] * amp;
-    const px = PAD_X + (i - 1) * step, py = baseY - vals[i - 1] * amp;
-    const cx = (px + x) / 2;
-    d += ` C ${cx.toFixed(1)} ${py.toFixed(1)}, ${cx.toFixed(1)} ${y.toFixed(1)}, ${x.toFixed(1)} ${y.toFixed(1)}`;
-  }
-  return d;
-}
-
-function render(rows) {
-  const innerW = W - PAD_X * 2;
-  const gap = (H - TOP - BOTTOM) / (ROWS - 1);
-  // Bursty, sparse data: presence floor makes every active day visible,
-  // sqrt compresses the spread so a 150-commit day doesn't flatten 1-commit days.
-  // Percentile caps backfire here — with few active days they clip everything to max.
-  const max = Math.max(1, ...rows.flatMap(([, counts]) => counts));
-  const scale = c => c > 0 ? 0.22 + 0.78 * Math.sqrt(c / max) : 0;
-
-  let busiest = { count: -1, row: 0, idx: 0, len: 1 };
-  rows.forEach(([, counts], m) => counts.forEach((c, i) => {
-    if (c > busiest.count) busiest = { count: c, row: m, idx: i, len: counts.length };
-  }));
-
-  let body = '';
-  // Accent the newest month that has activity — day 1 of a fresh month has no terrain yet
-  let accentRow = ROWS - 1;
-  while (accentRow > 0 && rows[accentRow][1].every(c => c === 0)) accentRow--;
-
-  rows.forEach(([key, counts], m) => {
-    const baseY = TOP + m * gap;
-    // Trailing zero-pad to full row width: the partial current month descends to
-    // its baseline after today instead of ending mid-air, and short months reach
-    // the right edge like 31-day ones.
-    const padded = [...counts];
-    while (padded.length < DAY_STEP + 1) padded.push(0);
-    const vals = smooth(padded.map(scale));
-    const d = ridgePath(vals, baseY, AMP, innerW);
-    const last = m === accentRow;
-    const opacity = (0.3 + 0.7 * (m / (ROWS - 1))).toFixed(2);
-    const delay = (m * 0.08).toFixed(2);
-    const lastX = PAD_X + (vals.length - 1) * (innerW / DAY_STEP);
-    body += `<path class="occ" d="${d} L ${lastX.toFixed(1)} ${H} L ${PAD_X} ${H} Z"/>`;
-    body += `<path class="${last ? 'rl' : 'rg'}" pathLength="1" style="animation-delay:${delay}s"` +
-      (last ? '' : ` stroke-opacity="${opacity}"`) + ` d="${d}"/>`;
-    body += `<text class="faint" x="${PAD_X - 34}" y="${(baseY + 3).toFixed(1)}">${MONTHS[+key.slice(5) - 1]}</text>`;
-    if (m === busiest.row && busiest.count > 0) {
-      const mx = PAD_X + busiest.idx * (innerW / DAY_STEP);
-      const my = baseY - vals[busiest.idx] * AMP;
-      body += `<circle cx="${mx.toFixed(1)}" cy="${my.toFixed(1)}" r="3" fill="${ACCENT}"/>`;
-      body += `<text x="${Math.min(mx + 9, W - 190).toFixed(1)}" y="${(my - 7).toFixed(1)}">BUSIEST · ${busiest.count} COMMITS</text>`;
-    }
+  rows.forEach(([key, ds], ti) => {
+    const total = totals[ti], active = total > 0;
+    const x = PAD + ti * slot + (slot - towerW) / 2;
+    const h = active ? 90 + 170 * Math.sqrt(total / maxTotal) : 34 + rnd() * 26;
+    const top = STREET - h;
+    city += `<rect class="tw" x="${x.toFixed(1)}" y="${top.toFixed(1)}" width="${towerW}" height="${h.toFixed(1)}"/>`;
+    if (ti === 11) city += `<rect class="dawn" x="${x.toFixed(1)}" y="${top.toFixed(1)}" width="2" height="${h.toFixed(1)}" opacity="0.25"/>`;
+    const cols = 4, cw = 7, ch = 5, gx = (towerW - cols * cw) / (cols + 1), gy = 4;
+    ds.forEach((day, d) => {
+      // fill bottom-up: buildings light from the street; a young month keeps
+      // dark floors above — under construction
+      const col = d % cols, row = (d - col) / cols;
+      const wx = x + gx + col * (cw + gx), wy = STREET - 10 - (row + 1) * (ch + gy);
+      if (wy < top + 4) return;
+      if (day.count > 0) {
+        const o = 0.30 + 0.70 * Math.sqrt(day.count / maxDay);
+        const flick = rnd() < 0.12
+          ? `<animate attributeName="opacity" values="${o.toFixed(2)};${(o * 0.45).toFixed(2)};${o.toFixed(2)}" dur="${(3 + rnd() * 4).toFixed(1)}s" repeatCount="indefinite"/>` : '';
+        city += `<rect class="win" x="${wx.toFixed(1)}" y="${wy.toFixed(1)}" width="${cw}" height="${ch}" opacity="${o.toFixed(2)}">${flick}</rect>`;
+        if (day.count > burst.c) burst = { c: day.count, x: wx + cw / 2, y: wy + ch / 2, ti, tx: x, th: h, date: day.date };
+      } else {
+        city += `<rect class="dark" x="${wx.toFixed(1)}" y="${wy.toFixed(1)}" width="${cw}" height="${ch}"/>`;
+      }
+    });
+    labels += `<text class="mo" x="${(x + towerW / 2).toFixed(1)}" y="${STREET + 16}" text-anchor="middle">${MONTHS[+key.slice(5) - 1]}</text>`;
   });
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="A year of commits rendered as terrain, one ridge per month">
+  // rooftop searchlight over the busiest tower; label pinned top-right sky
+  let beacon = '';
+  if (burst.c > 0) {
+    const bd = new Date(burst.date + 'T00:00:00Z');
+    const when = `${MONTHS[bd.getUTCMonth()]} ${String(bd.getUTCDate()).padStart(2, '0')}`;
+    beacon = `
+<rect x="${(burst.tx + towerW / 2 - 2).toFixed(1)}" y="26" width="4" height="${(STREET - burst.th - 26).toFixed(1)}" fill="url(#beam)" opacity="0.2">
+  <animate attributeName="opacity" values="0.2;0.08;0.2" dur="5s" repeatCount="indefinite"/>
+</rect>
+<circle cx="${burst.x.toFixed(1)}" cy="${burst.y.toFixed(1)}" r="4.5" fill="#FFE3AC" filter="url(#glow)"/>
+<text class="tag" x="${W - PAD}" y="46" text-anchor="end">${burst.c} COMMITS · ONE NIGHT</text>
+<text class="tag dim" x="${W - PAD}" y="62" text-anchor="end">THE CITY DIDN'T SLEEP · ${when}</text>`;
+  }
+
+  // lava-blue Virtus, side profile, crossing on a loop (with reflection)
+  const car = `
+<g id="virtus">
+  <path d="M2 8.6 C2 6.4 4 5.8 8.5 5.4 L14 2.6 C16.5 1.3 20 1 24 1.3 L30.5 2.3 C33.5 2.8 35.5 4 36.5 5.2 L42 6 C44.4 6.4 45 7.4 45 8.8 L45 10.6 L2 10.6 Z" fill="${LAVA}"/>
+  <path d="M15.2 5.2 L18 2.9 C20 1.9 23 1.8 26 2.1 L30 2.7 C32 3.1 33.6 4.2 34.4 5.2 Z" fill="#0E1A2C" opacity="0.85"/>
+  <line x1="26.4" y1="2" x2="26.4" y2="5.2" stroke="${LAVA}" stroke-width="0.8"/>
+  <circle cx="11" cy="10.6" r="2.9" fill="#080D14"/><circle cx="11" cy="10.6" r="1.1" fill="#3A4A5E"/>
+  <circle cx="36" cy="10.6" r="2.9" fill="#080D14"/><circle cx="36" cy="10.6" r="1.1" fill="#3A4A5E"/>
+  <rect x="44" y="7" width="1.6" height="1.6" fill="#FFE9B0"/>
+  <rect x="1.4" y="7" width="1.4" height="1.4" fill="#E0523E"/>
+  <polygon points="45.6,7 68,5.4 68,10.2 45.6,9.4" fill="url(#headlight)"/>
+</g>`;
+  const carRun = `
+<g filter="url(#glow)"><g>
+  <animateTransform attributeName="transform" type="translate" from="-80 ${STREET - 13}" to="${W + 30} ${STREET - 13}" dur="12s" begin="-5s" repeatCount="indefinite"/>
+  <use href="#virtus"/>
+  <use href="#virtus" transform="translate(0 22.2) scale(1 -1)" opacity="0.18"/>
+</g></g>`;
+
+  // sky by weather
+  const kind = weather?.kind ?? 'haze';
+  let sky = '', reflOpacity = 0.16;
+  if (kind === 'clear' || kind === 'cloudy') {
+    let stars = '';
+    if (kind === 'clear') for (let i = 0; i < 22; i++) {
+      const sx = PAD + rnd() * (W - PAD * 2), sy = 24 + rnd() * 120, so = 0.25 + rnd() * 0.5;
+      stars += `<circle cx="${sx.toFixed(1)}" cy="${sy.toFixed(1)}" r="0.9" fill="#DCE6F2" opacity="${so.toFixed(2)}">${
+        rnd() < 0.3 ? `<animate attributeName="opacity" values="${so.toFixed(2)};0.1;${so.toFixed(2)}" dur="${(2 + rnd() * 4).toFixed(1)}s" repeatCount="indefinite"/>` : ''}</circle>`;
+    }
+    const moonOp = kind === 'clear' ? 0.85 : 0.4;
+    sky = `${stars}<circle cx="300" cy="60" r="13" fill="#E8EDF4" opacity="${moonOp}" filter="url(#moonglow)"/>`;
+    if (kind === 'cloudy') sky += `
+      <ellipse cx="280" cy="66" rx="52" ry="10" fill="#141F30" opacity="0.8"/>
+      <ellipse cx="470" cy="96" rx="66" ry="11" fill="#141F30" opacity="0.65"/>`;
+  } else if (kind === 'haze') {
+    sky = `<circle cx="300" cy="60" r="13" fill="#E8EDF4" opacity="0.8" filter="url(#moonglow)"/>
+<rect x="0" y="150" width="${W}" height="70" fill="url(#haze)" opacity="0.5"/>`;
+  } else { // rain / snow
+    reflOpacity = 0.22;
+    const drop = kind === 'snow' ? { len: 3, w: 1.4, col: '#D8E2EE', dur: 3.2 } : { len: 11, w: 0.9, col: '#7FA0C8', dur: 1.1 };
+    let lines = '';
+    for (let i = 0; i < 46; i++) {
+      const rx = rnd() * W, ry = rnd() * H;
+      lines += `<line x1="${rx.toFixed(1)}" y1="${ry.toFixed(1)}" x2="${(rx - 2).toFixed(1)}" y2="${(ry + drop.len).toFixed(1)}" stroke="${drop.col}" stroke-width="${drop.w}" opacity="0.35"/>`;
+    }
+    sky = `<g><animateTransform attributeName="transform" type="translate" from="0 -${H}" to="0 0" dur="${drop.dur}s" repeatCount="indefinite"/>${lines}
+      <g transform="translate(0 -${H})">${lines}</g></g>`;
+  }
+
+  const wxLabel = { clear: 'CLEAR NIGHT', cloudy: 'CLOUDY', haze: 'HAZY NIGHT', rain: 'RAIN', snow: 'SNOW' }[kind];
+  const header = weather ? `CHANDIGARH · ${weather.temp}°C · ${wxLabel}` : 'CHANDIGARH';
+
+  const LANG_COLORS = [AMBER, '#E88A6A', '#9BC0A0', '#B4A0D8'];
+  const SHORT = { TypeScript: 'TS', JavaScript: 'JS', Python: 'PY', Go: 'GO', Rust: 'RS', HTML: 'HTML', CSS: 'CSS', Shell: 'SH' };
+  const signW = 64;
+  const signs = langs.map((l, i) => {
+    const sx = W - PAD - (langs.length - i) * (signW + 10);
+    const col = LANG_COLORS[i % LANG_COLORS.length];
+    const name = SHORT[l.name] || l.name.slice(0, 2).toUpperCase();
+    return `<rect x="${sx}" y="${STREET + 26}" width="${signW}" height="20" rx="3" fill="none" stroke="${col}" stroke-opacity="0.55"/>
+<text class="sign" x="${sx + signW / 2}" y="${STREET + 39.5}" text-anchor="middle" fill="${col}">${name} ${l.pct}%</text>`;
+  }).join('');
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="A year of commits as a city at night: each tower a month, each lit window a day">
 <style>
-  :root{--canvas:#0d1117;--ridge:#5a6572;--meta:#8b949e;--faint:#39424f}
-  @media(prefers-color-scheme:light){:root{--canvas:#ffffff;--ridge:#6e7781;--meta:#57606a;--faint:#8c959f}}
-  .occ{fill:var(--canvas)}
-  .rg,.rl{fill:none;stroke:var(--ridge);stroke-width:1.3;stroke-dasharray:1;stroke-dashoffset:1;animation:d 1.6s ease-out forwards}
-  .rl{stroke:${ACCENT};stroke-width:1.8}
-  @keyframes d{to{stroke-dashoffset:0}}
-  @media(prefers-reduced-motion:reduce){.rg,.rl{animation:none;stroke-dashoffset:0}}
-  text{font:600 10px ui-monospace,Menlo,Consolas,monospace;letter-spacing:1.5px;fill:var(--meta)}
-  .faint{fill:var(--faint);letter-spacing:1px}
+  :root{--sky1:#0A1626;--sky2:#13253E;--sky3:#1B3050;--street1:#0C1828;--street2:#060C16;--haze:#31517A;
+        --tower:#0A111C;--darkwin:#131E2E;--meta:#8FA3BC;--faint:#5D7492}
+  @media(prefers-color-scheme:light){:root{--sky1:#C7D5E6;--sky2:#B4C6DC;--sky3:#9FB4CE;--street1:#8FA3BC;--street2:#6E84A0;--haze:#DFE9F4;
+        --tower:#25344A;--darkwin:#31435C;--meta:#3B4E68;--faint:#5E7391}}
+  .tw{fill:var(--tower)}.dark{fill:var(--darkwin)}.win{fill:${AMBER}}
+  .dawn{fill:${SILVER}}
+  text{font:600 11px ui-monospace,Menlo,Consolas,monospace;letter-spacing:1.6px;fill:var(--meta)}
+  .neon{font-size:15px;letter-spacing:7px;fill:#F5D9A8}
+  .tag{font-size:10px;fill:#EFD9B4}.dim{opacity:0.6}
+  .mo{font-size:8px;fill:var(--faint);letter-spacing:1px}
+  .sign{font-size:9px;letter-spacing:1px}
+  .cap{font-size:9px;fill:var(--faint)}
+  .temp{font-size:10px;fill:var(--meta)}
+  @media(prefers-reduced-motion:reduce){svg *{animation:none!important}}
 </style>
-${body}
-<text class="faint" x="${PAD_X}" y="${H - 14}">01</text>
-<text class="faint" x="${W - PAD_X - 14}" y="${H - 14}">31</text>
-<text x="${W / 2}" y="${H - 14}" text-anchor="middle">365 DAYS · REDRAWN NIGHTLY · 00:00 UTC</text>
+<defs>
+  <linearGradient id="skyg" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="var(--sky1)"/><stop offset="0.72" stop-color="var(--sky2)"/><stop offset="1" stop-color="var(--sky3)"/>
+  </linearGradient>
+  <linearGradient id="wet" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="var(--street1)"/><stop offset="1" stop-color="var(--street2)"/>
+  </linearGradient>
+  <linearGradient id="beam" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#FFE3AC" stop-opacity="0"/><stop offset="1" stop-color="#FFE3AC" stop-opacity="0.55"/>
+  </linearGradient>
+  <linearGradient id="headlight" x1="0" y1="0" x2="1" y2="0">
+    <stop offset="0" stop-color="#FFE9B0" stop-opacity="0.35"/><stop offset="1" stop-color="#FFE9B0" stop-opacity="0"/>
+  </linearGradient>
+  <linearGradient id="haze" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="var(--haze)" stop-opacity="0"/><stop offset="0.5" stop-color="var(--haze)" stop-opacity="0.6"/><stop offset="1" stop-color="var(--haze)" stop-opacity="0"/>
+  </linearGradient>
+  <filter id="glow" x="-80%" y="-80%" width="260%" height="260%"><feGaussianBlur stdDeviation="2.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  <filter id="moonglow" x="-120%" y="-120%" width="340%" height="340%"><feGaussianBlur stdDeviation="6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  <filter id="ripple"><feGaussianBlur stdDeviation="0.8 2.4"/></filter>
+  <clipPath id="streetclip"><rect x="0" y="${STREET}" width="${W}" height="${H - STREET}"/></clipPath>
+</defs>
+<rect width="${W}" height="${H}" fill="url(#skyg)"/>
+${sky}
+<text class="neon" x="${PAD}" y="52" filter="url(#glow)">SHIVARCHIT</text>
+<text class="temp" x="${PAD}" y="74">${header}</text>
+<rect x="0" y="${STREET}" width="${W}" height="${H - STREET}" fill="url(#wet)"/>
+<g clip-path="url(#streetclip)">
+  <g transform="translate(0 ${STREET * 2}) scale(1 -1)" opacity="${reflOpacity}" filter="url(#ripple)">
+    <g>${city}</g>
+  </g>
+</g>
+<rect x="0" y="${STREET}" width="${W}" height="1.2" fill="#2A3A50" opacity="0.9"/>
+<g>${city}</g>
+${carRun}
+${beacon}
+${labels}
+${signs}
+<text class="cap" x="${PAD}" y="${H - 12}">EACH TOWER A MONTH · EACH LIT WINDOW A DAY · REDRAWN NIGHTLY 00:00 UTC</text>
 </svg>\n`;
 }
 
-const days = process.argv.includes('--demo') ? demoDays() : await fetchDays();
-const svg = render(byMonth(days));
-if (!svg.includes('</svg>') || (svg.match(/<path class="rg"|<path class="rl"/g) || []).length !== ROWS)
+// ---------- main ----------
+const demo = process.argv.includes('--demo');
+const days = demo ? demoDays() : await fetchDays();
+const langs = demo
+  ? [{ name: 'TypeScript', pct: 62 }, { name: 'Python', pct: 21 }, { name: 'Go', pct: 9 }]
+  : await fetchLangs();
+const weather = await fetchWeather();
+const svg = render(byMonth(days), langs, weather);
+// city block appears twice (skyline + reflection)
+if (!svg.includes('</svg>') || (svg.match(/class="tw"/g) || []).length !== 24)
   throw new Error('render self-check failed');
 mkdirSync('dist', { recursive: true });
 writeFileSync('dist/terrain.svg', svg);
-console.log(`dist/terrain.svg written (${svg.length} bytes)`);
+console.log(`dist/terrain.svg written (${svg.length} bytes, weather: ${weather ? weather.kind : 'unavailable'})`);
