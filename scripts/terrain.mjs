@@ -235,6 +235,7 @@ function render(rows, langs, weather) {
   <filter id="moonglow" x="-120%" y="-120%" width="340%" height="340%"><feGaussianBlur stdDeviation="6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
   <filter id="ripple"><feGaussianBlur stdDeviation="0.8 2.4"/></filter>
   <clipPath id="streetclip"><rect x="0" y="${STREET}" width="${W}" height="${H - STREET}"/></clipPath>
+  ${car}
 </defs>
 <rect width="${W}" height="${H}" fill="url(#skyg)"/>
 ${sky}
